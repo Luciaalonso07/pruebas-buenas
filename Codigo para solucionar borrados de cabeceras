@@ -3,25 +3,11 @@ Option Explicit
 '========================================================================================
 '   SINCRONIZADOR DE PLANTILLA -> EXCELS HIJOS (subcarpetas)
 '
-'   QUÉ HACE:
-'   - Lee la configuración de la hoja CFG_SYNC en la PLANTILLA (ThisWorkbook).
-'   - Para cada archivo Excel "hijo" encontrado en subcarpetas (01.Prueba, 02.Prueba, etc.):
-'       - Para cada hoja activa en CFG_SYNC:
-'           - Detecta el bloque/tabla (cabeceras + rango de columnas).
-'           - Construye la "firma" de cada columna usando TODAS las filas de cabecera
-'             (HEADER_TOP..HEADER_BOTTOM), respetando celdas combinadas.
-'           - Inserta columnas que existan en la Plantilla y no en el hijo.
-'           - Elimina columnas que existan en el hijo y no en la Plantilla.
-'           - Copia formato/ancho/validación/fórmulas para columnas nuevas desde la Plantilla.
-'
-'   IMPORTANTE:
-'   - Esto NO se ejecuta "solo" cuando insertas una columna: hay que correr el macro
-'     (o engancharlo a un evento como BeforeSave).
-'   - Trabaja con hijos .xlsx sin macros (los abre, modifica y guarda desde la plantilla).
-'
-'   DÓNDE TOCAR COSAS PARA OTRO PROYECTO:
-'   - ROOT FOLDER / SUBCARPETAS: ver GetRootFolder() y CHILD_FOLDERS()
-'   - CFG_SYNC: cambia filas/valores, no hace falta tocar código
+'   ACTUALIZACIÓN IMPORTANTE (KEY_ROW):
+'   - Añade en CFG_SYNC la columna I: KEY_ROW
+'   - Si KEY_ROW está informado (y cae entre HEADER_TOP..HEADER_BOTTOM),
+'     la "firma" de columnas se construye usando esa fila (ideal si contiene 1..40, etc.)
+'   - Si KEY_ROW está vacío/0, se usa el método original multi-fila (HEADER_TOP..HEADER_BOTTOM)
 '========================================================================================
 
 
@@ -29,19 +15,10 @@ Option Explicit
 '   AJUSTES PRINCIPALES
 '=============================
 
-'Nombre de la hoja de configuración
 Private Const CFG_SHEET_NAME As String = "CFG_SYNC"
-
-'Extensiones de archivos hijo que vamos a procesar
 Private Const CHILD_EXTENSIONS As String = "*.xlsx;*.xlsm;*.xlsb;*.xls"
-
-'Carpeta "Plantilla" (para excluirla si buscas subcarpetas)
 Private Const TEMPLATE_FOLDER_NAME As String = "Plantilla"
-
-'Si True: elimina en el hijo las columnas que no están en plantilla (dentro del bloque)
 Private Const DELETE_EXTRA_COLUMNS As Boolean = True
-
-'Si True: actualiza (formato) de las cabeceras del hijo según la plantilla
 Private Const REFRESH_HEADER_FORMATS As Boolean = True
 
 
@@ -50,7 +27,6 @@ Private Const REFRESH_HEADER_FORMATS As Boolean = True
 '=============================
 
 Public Sub SYNC_Run()
-    'Macro principal: actualiza todos los archivos hijo en las subcarpetas indicadas.
     Dim rootFolder As String
     rootFolder = GetRootFolder()
 
@@ -90,14 +66,11 @@ End Sub
 '   1) RUTAS Y BÚSQUEDA DE ARCHIVOS HIJO
 '========================================================================================
 
-
 Private Function GetRootFolder() As String
     GetRootFolder = "C:\Users\VW356HB\OneDrive - EY\Desktop\pruebas buenas"
 End Function
 
-
 Private Function ParentFolder(ByVal folderPath As String) As String
-    'Devuelve el directorio padre de una ruta
     Dim p As Long
     p = InStrRev(folderPath, Application.PathSeparator)
     If p <= 1 Then
@@ -107,11 +80,9 @@ Private Function ParentFolder(ByVal folderPath As String) As String
     End If
 End Function
 
-
 Private Function CHILD_FOLDERS() As Variant
     CHILD_FOLDERS = Array("01.Prueba", "02.Prueba")
 End Function
-
 
 Private Sub SyncAllChildrenInFolders(ByVal rootFolder As String)
     Dim fso As Object: Set fso = CreateObject("Scripting.FileSystemObject")
@@ -140,7 +111,6 @@ Private Sub SyncAllChildrenInOneFolder(ByVal folderPath As String)
         fileName = Dir(folderPath & Application.PathSeparator & patterns(p))
 
         Do While Len(fileName) > 0
-            'Excluye la propia plantilla si por lo que sea cae aquí
             If LCase(fileName) <> LCase(ThisWorkbook.Name) Then
                 SyncOneChildWorkbook folderPath & Application.PathSeparator & fileName
             End If
@@ -166,13 +136,11 @@ Private Sub SyncOneChildWorkbook(ByVal childFullPath As String)
     Exit Sub
 
 SafeClose:
-    'Si algo falla, intentamos cerrar sin reventar
     On Error Resume Next
     wbChild.Close SaveChanges:=False
 End Sub
 
 Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild As Workbook)
-    'Lee CFG_SYNC y aplica a cada hoja configurada.
     Dim wsCfg As Worksheet
     Set wsCfg = wbTemplate.Worksheets(CFG_SHEET_NAME)
 
@@ -184,7 +152,7 @@ Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild
         Dim activeFlag As String
         activeFlag = Trim$(CStr(wsCfg.Cells(r, "A").Value))
 
-        If UCase(activeFlag) = "Y" Then
+        If UCase$(activeFlag) = "Y" Then
             Dim templateSheetName As String
             templateSheetName = CStr(wsCfg.Cells(r, "B").Value)
 
@@ -201,11 +169,16 @@ Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild
             firstCol = CLng(wsCfg.Cells(r, "G").Value)  '0 = AUTO
             lastCol = CLng(wsCfg.Cells(r, "H").Value)   '0 = AUTO
 
+            ' NUEVO: KEY_ROW (columna I)
+            Dim keyRow As Long
+            keyRow = 0
+            If IsNumeric(wsCfg.Cells(r, "I").Value) Then keyRow = CLng(wsCfg.Cells(r, "I").Value)
+
             If SheetExists(wbTemplate, templateSheetName) And SheetExists(wbChild, childSheetName) Then
                 SyncOneSheetBlock _
                     wbTemplate.Worksheets(templateSheetName), _
                     wbChild.Worksheets(childSheetName), _
-                    headerTop, headerBottom, dataStart, firstCol, lastCol
+                    headerTop, headerBottom, dataStart, firstCol, lastCol, keyRow
             End If
         End If
     Next r
@@ -226,15 +199,13 @@ Private Sub SyncOneSheetBlock( _
     ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
     ByVal headerTop As Long, ByVal headerBottom As Long, _
     ByVal dataStart As Long, _
-    ByVal firstCol As Long, ByVal lastCol As Long)
+    ByVal firstCol As Long, ByVal lastCol As Long, _
+    ByVal keyRow As Long)
 
-    'AUTO-Detect FIRST/LAST si vienen como 0
     If firstCol = 0 Then firstCol = FirstNonEmptyCol(wsT, headerTop, headerBottom)
     If lastCol = 0 Then lastCol = LastNonEmptyCol(wsT, headerTop, headerBottom)
-
     If firstCol = 0 Or lastCol = 0 Or lastCol < firstCol Then Exit Sub
 
-    'Calculamos el último row "razonable" del bloque mirando plantilla (para copiar fórmulas)
     Dim lastRowT As Long
     lastRowT = LastUsedRowInColumns(wsT, firstCol, lastCol)
 
@@ -244,17 +215,12 @@ Private Sub SyncOneSheetBlock( _
     If lastRowT < dataStart Then lastRowT = dataStart
     If lastRowC < dataStart Then lastRowC = dataStart
 
-    'Construye arrays de claves de columnas (Plantilla y Hijo)
     Dim keysT As Variant, keysC As Variant
-    keysT = GetColumnKeys(wsT, headerTop, headerBottom, firstCol, lastCol)
-    keysC = GetColumnKeys(wsC, headerTop, headerBottom, firstCol, LastNonEmptyCol(wsC, headerTop, headerBottom))
+    keysT = GetColumnKeys(wsT, headerTop, headerBottom, firstCol, lastCol, keyRow)
+    keysC = GetColumnKeys(wsC, headerTop, headerBottom, firstCol, LastNonEmptyCol(wsC, headerTop, headerBottom), keyRow)
 
-    'Sincroniza:
-    ' - Inserta en hijo lo que falta
-    ' - (Opcional) elimina lo que sobra
-    AlignChildColumnsToTemplate wsT, wsC, keysT, keysC, headerTop, headerBottom, dataStart, lastRowT, firstCol, lastCol
+    AlignChildColumnsToTemplate wsT, wsC, keysT, keysC, headerTop, headerBottom, dataStart, lastRowT, firstCol, lastCol, keyRow
 
-    'Refresca formatos de cabecera (opcional)
     If REFRESH_HEADER_FORMATS Then
         CopyHeaderFormats wsT, wsC, headerTop, headerBottom, firstCol, LastNonEmptyCol(wsC, headerTop, headerBottom)
     End If
@@ -270,12 +236,12 @@ Private Sub AlignChildColumnsToTemplate( _
     ByVal keysT As Variant, ByVal keysC As Variant, _
     ByVal headerTop As Long, ByVal headerBottom As Long, _
     ByVal dataStart As Long, ByVal lastRowT As Long, _
-    ByVal firstCol As Long, ByVal lastColT As Long)
+    ByVal firstCol As Long, ByVal lastColT As Long, _
+    ByVal keyRow As Long)
 
     Dim dictC As Object: Set dictC = CreateObject("Scripting.Dictionary")
     Dim colIndexC As Long
 
-    'Mapea key -> columna actual en el hijo
     For colIndexC = LBound(keysC) To UBound(keysC)
         If Len(keysC(colIndexC)) > 0 Then
             dictC(keysC(colIndexC)) = firstCol + (colIndexC - LBound(keysC))
@@ -287,8 +253,6 @@ Private Sub AlignChildColumnsToTemplate( _
     currentChildLastCol = LastNonEmptyCol(wsC, headerTop, headerBottom)
     If currentChildLastCol < firstCol Then currentChildLastCol = firstCol
 
-    'Recorremos columnas de plantilla de izquierda a derecha.
-    'Si una key no está en el hijo -> insertamos columna en el sitio correcto.
     For i = LBound(keysT) To UBound(keysT)
         Dim key As String
         key = keysT(i)
@@ -297,45 +261,31 @@ Private Sub AlignChildColumnsToTemplate( _
         targetColInChild = firstCol + (i - LBound(keysT))
 
         If Len(key) = 0 Then
-            'Si en plantilla hay una columna "vacía" en cabecera,
-            'lo normal es que no quieras sincronizarla. La saltamos.
+            'saltamos
         Else
             If dictC.Exists(key) Then
-                'La columna existe en el hijo.
-                'Si NO está donde toca, no la movemos (para no liarla).
-                'En tu caso, como vas sincronizando siempre desde plantilla,
-                'con insert/delete ya se mantiene el orden.
+                'existe
             Else
-                'No existe -> INSERTAR y copiar desde plantilla
                 wsC.Columns(targetColInChild).Insert Shift:=xlToRight
-
-                'Al insertar, todas las columnas a la derecha se desplazan.
-                'Tenemos que actualizar el diccionario: sumamos +1 a las columnas >= targetColInChild
                 ShiftDictRight dictC, targetColInChild
 
-                'Copiar columna desde plantilla (cabecera + área de datos)
                 CopyNewTemplateColumn wsT, wsC, _
                     templateCol:=targetColInChild, childCol:=targetColInChild, _
                     headerTop:=headerTop, headerBottom:=headerBottom, _
                     dataStart:=dataStart, lastRowT:=lastRowT
 
-                'Registrar en dict
                 dictC(key) = targetColInChild
-
-                'Actualizar último col del hijo
                 currentChildLastCol = currentChildLastCol + 1
             End If
         End If
     Next i
 
-    'Eliminar columnas extra (si está activado)
     If DELETE_EXTRA_COLUMNS Then
-        DeleteExtraChildColumns wsT, wsC, headerTop, headerBottom, firstCol, lastColT
+        DeleteExtraChildColumns wsT, wsC, headerTop, headerBottom, firstCol, lastColT, keyRow
     End If
 End Sub
 
 Private Sub ShiftDictRight(ByVal dictC As Object, ByVal fromCol As Long)
-    'Cuando insertas una columna en el hijo, todas las columnas >= fromCol se mueven +1
     Dim k As Variant
     For Each k In dictC.Keys
         If dictC(k) >= fromCol Then dictC(k) = dictC(k) + 1
@@ -345,7 +295,8 @@ End Sub
 Private Sub DeleteExtraChildColumns( _
     ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
     ByVal headerTop As Long, ByVal headerBottom As Long, _
-    ByVal firstCol As Long, ByVal lastColT As Long)
+    ByVal firstCol As Long, ByVal lastColT As Long, _
+    ByVal keyRow As Long)
 
     Dim lastColC As Long
     lastColC = LastNonEmptyCol(wsC, headerTop, headerBottom)
@@ -354,17 +305,15 @@ Private Sub DeleteExtraChildColumns( _
     Dim keysT As Object: Set keysT = CreateObject("Scripting.Dictionary")
     Dim c As Long
 
-    'Cargamos keys de plantilla en un set
     For c = firstCol To lastColT
         Dim kt As String
-        kt = BuildHeaderKey(wsT, c, headerTop, headerBottom)
+        kt = BuildHeaderKeySmart(wsT, c, headerTop, headerBottom, keyRow)
         If Len(kt) > 0 Then keysT(kt) = True
     Next c
 
-    'Recorremos hijo de DERECHA a IZQUIERDA para borrar sin descuadrar índices
     For c = lastColC To firstCol Step -1
         Dim kc As String
-        kc = BuildHeaderKey(wsC, c, headerTop, headerBottom)
+        kc = BuildHeaderKeySmart(wsC, c, headerTop, headerBottom, keyRow)
 
         If Len(kc) > 0 Then
             If Not keysT.Exists(kc) Then
@@ -385,17 +334,11 @@ Private Sub CopyNewTemplateColumn( _
     ByVal headerTop As Long, ByVal headerBottom As Long, _
     ByVal dataStart As Long, ByVal lastRowT As Long)
 
-    'Copiamos:
-    ' - Ancho de columna
-    ' - Cabecera (valores + formatos)
-    ' - Área de datos (todo, para que entren fórmulas/validación/formato)
     wsC.Columns(childCol).ColumnWidth = wsT.Columns(templateCol).ColumnWidth
 
-    '1) Copiar cabecera completa
     wsT.Range(wsT.Cells(headerTop, templateCol), wsT.Cells(headerBottom, templateCol)).Copy
     wsC.Cells(headerTop, childCol).PasteSpecial Paste:=xlPasteAll
 
-    '2) Copiar desde dataStart hasta lastRowT (fórmulas, validación, formatos…)
     wsT.Range(wsT.Cells(dataStart, templateCol), wsT.Cells(lastRowT, templateCol)).Copy
     wsC.Cells(dataStart, childCol).PasteSpecial Paste:=xlPasteAll
 
@@ -407,7 +350,6 @@ Private Sub CopyHeaderFormats( _
     ByVal headerTop As Long, ByVal headerBottom As Long, _
     ByVal firstCol As Long, ByVal lastCol As Long)
 
-    'Refresca SOLO formatos de cabecera (no valores), útil para mantener estética.
     wsT.Range(wsT.Cells(headerTop, firstCol), wsT.Cells(headerBottom, lastCol)).Copy
     wsC.Range(wsC.Cells(headerTop, firstCol), wsC.Cells(headerBottom, lastCol)).PasteSpecial Paste:=xlPasteFormats
     Application.CutCopyMode = False
@@ -415,13 +357,14 @@ End Sub
 
 
 '========================================================================================
-'   6) OBTENER CLAVES DE COLUMNAS (multi-fila + merges)
+'   6) OBTENER CLAVES DE COLUMNAS (multi-fila + merges) + KEY_ROW
 '========================================================================================
 
 Private Function GetColumnKeys( _
     ByVal ws As Worksheet, _
     ByVal headerTop As Long, ByVal headerBottom As Long, _
-    ByVal firstCol As Long, ByVal lastCol As Long) As Variant
+    ByVal firstCol As Long, ByVal lastCol As Long, _
+    ByVal keyRow As Long) As Variant
 
     Dim arr() As String
     Dim n As Long
@@ -431,30 +374,50 @@ Private Function GetColumnKeys( _
     Dim c As Long, idx As Long
     idx = 1
     For c = firstCol To lastCol
-        arr(idx) = BuildHeaderKey(ws, c, headerTop, headerBottom)
+        arr(idx) = BuildHeaderKeySmart(ws, c, headerTop, headerBottom, keyRow)
         idx = idx + 1
     Next c
 
     GetColumnKeys = arr
 End Function
 
-Private Function BuildHeaderKey( _
+Private Function BuildHeaderKeySmart( _
+    ByVal ws As Worksheet, _
+    ByVal col As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal keyRow As Long) As String
+
+    If keyRow >= headerTop And keyRow <= headerBottom And keyRow > 0 Then
+        Dim vKR As String
+        vKR = NormalizeHeaderText(GetMergedValue(ws.Cells(keyRow, col)))
+
+        If Len(vKR) > 0 Then
+            If IsNumeric(vKR) Then
+                BuildHeaderKeySmart = "KR#" & CLng(Val(vKR))
+            Else
+                BuildHeaderKeySmart = "KR:" & vKR
+            End If
+            Exit Function
+        End If
+    End If
+
+    BuildHeaderKeySmart = BuildHeaderKeyFull(ws, col, headerTop, headerBottom)
+End Function
+
+Private Function BuildHeaderKeyFull( _
     ByVal ws As Worksheet, _
     ByVal col As Long, _
     ByVal headerTop As Long, ByVal headerBottom As Long) As String
 
-    'Crea una firma única para la columna usando TODAS las filas de cabecera:
-    'ej: "Impacto Legal|<2h" o "Proceso 1|No Relevante|>10d|No Esencial|1"
     Dim parts As Collection
     Set parts = New Collection
 
     Dim r As Long
     For r = headerTop To headerBottom
         Dim v As String
-        v = Trim$(GetMergedValue(ws.Cells(r, col)))
+        v = NormalizeHeaderText(GetMergedValue(ws.Cells(r, col)))
 
         If Len(v) > 0 Then
-            'Evita repetir el mismo texto en filas consecutivas
             If parts.Count = 0 Then
                 parts.Add v
             Else
@@ -463,7 +426,6 @@ Private Function BuildHeaderKey( _
         End If
     Next r
 
-    'Unimos con separador fijo (importante para que sea estable)
     Dim key As String
     key = ""
     Dim i As Long
@@ -475,16 +437,37 @@ Private Function BuildHeaderKey( _
         End If
     Next i
 
-    BuildHeaderKey = key
+    BuildHeaderKeyFull = key
+End Function
+
+Private Function NormalizeHeaderText(ByVal s As String) As String
+    Dim t As String
+    t = CStr(s)
+    t = Replace(t, vbCr, " ")
+    t = Replace(t, vbLf, " ")
+    t = Application.Trim(t) 'más robusto que WorksheetFunction.Trim
+    NormalizeHeaderText = t
 End Function
 
 Private Function GetMergedValue(ByVal cell As Range) As String
-    'Si la celda está dentro de un merge, devolvemos el valor de la celda "ancla" del merge.
+    On Error GoTo EH
+
+    Dim v As Variant
     If cell.MergeCells Then
-        GetMergedValue = CStr(cell.MergeArea.Cells(1, 1).Value)
+        v = cell.MergeArea.Cells(1, 1).Value
     Else
-        GetMergedValue = CStr(cell.Value)
+        v = cell.Value
     End If
+
+    If IsError(v) Then
+        GetMergedValue = ""
+    Else
+        GetMergedValue = CStr(v)
+    End If
+    Exit Function
+
+EH:
+    GetMergedValue = ""
 End Function
 
 
@@ -493,10 +476,9 @@ End Function
 '========================================================================================
 
 Private Function FirstNonEmptyCol(ByVal ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long) As Long
-    Dim c As Long
     Dim minCol As Long: minCol = 0
-
     Dim r As Long
+
     For r = r1 To r2
         Dim f As Range
         Set f = ws.Rows(r).Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
@@ -511,8 +493,8 @@ End Function
 
 Private Function LastNonEmptyCol(ByVal ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long) As Long
     Dim maxCol As Long: maxCol = 0
-
     Dim r As Long
+
     For r = r1 To r2
         Dim f As Range
         Set f = ws.Rows(r).Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
@@ -526,7 +508,6 @@ Private Function LastNonEmptyCol(ByVal ws As Worksheet, ByVal r1 As Long, ByVal 
 End Function
 
 Private Function LastUsedRowInColumns(ByVal ws As Worksheet, ByVal c1 As Long, ByVal c2 As Long) As Long
-    'Busca la última fila usada dentro del rango de columnas del bloque.
     Dim rng As Range
     Set rng = ws.Range(ws.Cells(1, c1), ws.Cells(ws.Rows.Count, c2))
 
@@ -539,4 +520,3 @@ Private Function LastUsedRowInColumns(ByVal ws As Worksheet, ByVal c1 As Long, B
         LastUsedRowInColumns = f.Row
     End If
 End Function
-
