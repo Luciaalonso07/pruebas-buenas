@@ -1,0 +1,646 @@
+Option Explicit
+
+'========================================================================================
+'   SINCRONIZADOR DE PLANTILLA -> EXCELS HIJOS (subcarpetas)
+'
+'   QUÉ HACE:
+'   - Alinea columnas entre plantilla e hijos (inserta nuevas columnas en el hijo).
+'   - (Opcional) Borra columnas “extra” del hijo que no existan en plantilla.
+'   - (Opcional) Refresca formatos de cabecera (solo cuando NO hay KEY_ROW).
+'   - FIX: Limpia referencias externas a [Plantilla.xlsm] en fórmulas pegadas.
+'
+'   MEJORA CLAVE: RENOMBRE DE CABECERAS SIN PERDER DATOS
+'   - Si cambias un título de cabecera (p.ej. "Descripción" -> "Descripción detallada"),
+'     el sincronizador lo detecta y SOLO actualiza la cabecera en el hijo, conservando datos.
+'
+'   KEY_ROW (CFG_SYNC col I):
+'   - Si KEY_ROW está entre HEADER_TOP..HEADER_BOTTOM, se usa para generar claves KR#...
+'   - Muy útil cuando los textos de cabecera difieren entre plantilla e hijo (p.ej. Procesos 1..40).
+'========================================================================================
+
+'=============================
+'   AJUSTES PRINCIPALES
+'=============================
+Private Const CFG_SHEET_NAME As String = "CFG_SYNC"
+Private Const CHILD_EXTENSIONS As String = "*.xlsx;*.xlsm;*.xlsb;*.xls"
+
+Private Const DELETE_EXTRA_COLUMNS As Boolean = True
+Private Const REFRESH_HEADER_FORMATS As Boolean = True
+
+' Limpia fórmulas de TODA la hoja (no solo de la columna nueva)
+Private Const FIX_EXTERNAL_REFS_WHOLE_SHEET As Boolean = True
+
+' NUEVO: Detectar renombres de cabecera y NO tocar datos
+Private Const HANDLE_HEADER_RENAMES As Boolean = True
+
+
+'=============================
+'   PUNTO DE ENTRADA
+'=============================
+Public Sub SYNC_RunReferencias()
+
+    Dim rootFolder As String
+    rootFolder = GetRootFolder()
+
+    If Len(rootFolder) = 0 Then
+        MsgBox "No se pudo calcular la carpeta raíz. Revisa la ruta de la plantilla.", vbExclamation
+        Exit Sub
+    End If
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Dim oldCalc As XlCalculation
+    oldCalc = Application.Calculation
+    Application.Calculation = xlCalculationManual
+
+    On Error GoTo CleanFail
+
+    SyncAllChildrenInFolders rootFolder
+
+CleanExit:
+    Application.CutCopyMode = False
+    Application.Calculation = oldCalc
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+    MsgBox "SYNC terminado.", vbInformation
+    Exit Sub
+
+CleanFail:
+    MsgBox "Error en SYNC: " & Err.Description, vbCritical
+    Resume CleanExit
+End Sub
+
+
+'========================================================================================
+'   1) RUTAS Y BÚSQUEDA DE ARCHIVOS HIJO
+'========================================================================================
+Private Function GetRootFolder() As String
+    ' >>> AJUSTA TU RUTA AQUÍ <<<
+    GetRootFolder = "C:\Users\VW356HB\OneDrive - EY\Desktop\pruebas buenas"
+End Function
+
+Private Function CHILD_FOLDERS() As Variant
+    CHILD_FOLDERS = Array("01.Prueba", "02.Prueba")
+End Function
+
+Private Sub SyncAllChildrenInFolders(ByVal rootFolder As String)
+    Dim fso As Object: Set fso = CreateObject("Scripting.FileSystemObject")
+    Dim folders As Variant: folders = CHILD_FOLDERS()
+
+    Dim i As Long
+    For i = LBound(folders) To UBound(folders)
+        Dim childFolder As String
+        childFolder = rootFolder & Application.PathSeparator & CStr(folders(i))
+
+        If fso.FolderExists(childFolder) Then
+            SyncAllChildrenInOneFolder childFolder
+        End If
+    Next i
+End Sub
+
+Private Sub SyncAllChildrenInOneFolder(ByVal folderPath As String)
+    Dim patterns As Variant
+    patterns = Split(CHILD_EXTENSIONS, ";")
+
+    Dim p As Long
+    For p = LBound(patterns) To UBound(patterns)
+        Dim fileName As String
+        fileName = Dir(folderPath & Application.PathSeparator & patterns(p))
+
+        Do While Len(fileName) > 0
+            If LCase$(fileName) <> LCase$(ThisWorkbook.Name) Then
+                SyncOneChildWorkbook folderPath & Application.PathSeparator & fileName
+            End If
+            fileName = Dir
+        Loop
+    Next p
+End Sub
+
+
+'========================================================================================
+'   2) SINCRONIZAR 1 ARCHIVO HIJO
+'========================================================================================
+Private Sub SyncOneChildWorkbook(ByVal childFullPath As String)
+    Dim wbChild As Workbook
+    Set wbChild = Workbooks.Open(childFullPath, ReadOnly:=False)
+
+    On Error GoTo SafeClose
+
+    SyncWorkbookFromTemplate ThisWorkbook, wbChild
+
+    wbChild.Close SaveChanges:=True
+    Exit Sub
+
+SafeClose:
+    On Error Resume Next
+    wbChild.Close SaveChanges:=False
+End Sub
+
+Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild As Workbook)
+
+    Dim wsCfg As Worksheet
+    Set wsCfg = wbTemplate.Worksheets(CFG_SHEET_NAME)
+
+    Dim lastRow As Long
+    lastRow = wsCfg.Cells(wsCfg.Rows.Count, "A").End(xlUp).Row
+
+    Dim r As Long
+    For r = 2 To lastRow
+        Dim activeFlag As String
+        activeFlag = Trim$(CStr(wsCfg.Cells(r, "A").Value))
+
+        If UCase$(activeFlag) = "Y" Then
+
+            Dim templateSheetName As String
+            templateSheetName = CStr(wsCfg.Cells(r, "B").Value)
+
+            Dim childSheetName As String
+            childSheetName = CStr(wsCfg.Cells(r, "C").Value)
+            If Len(Trim$(childSheetName)) = 0 Then childSheetName = templateSheetName
+
+            Dim headerTop As Long, headerBottom As Long, dataStart As Long
+            headerTop = CLng(wsCfg.Cells(r, "D").Value)
+            headerBottom = CLng(wsCfg.Cells(r, "E").Value)
+            dataStart = CLng(wsCfg.Cells(r, "F").Value)
+
+            Dim firstCol As Long, lastCol As Long
+            firstCol = CLng(wsCfg.Cells(r, "G").Value)  ' 0 = AUTO
+            lastCol = CLng(wsCfg.Cells(r, "H").Value)   ' 0 = AUTO
+
+            Dim keyRow As Long
+            keyRow = 0
+            If IsNumeric(wsCfg.Cells(r, "I").Value) Then keyRow = CLng(wsCfg.Cells(r, "I").Value)
+
+            If SheetExists(wbTemplate, templateSheetName) And SheetExists(wbChild, childSheetName) Then
+                SyncOneSheetBlock _
+                    wbTemplate.Worksheets(templateSheetName), _
+                    wbChild.Worksheets(childSheetName), _
+                    headerTop, headerBottom, dataStart, _
+                    firstCol, lastCol, keyRow, wbTemplate
+            End If
+        End If
+    Next r
+End Sub
+
+Private Function SheetExists(ByVal wb As Workbook, ByVal sheetName As String) As Boolean
+    On Error Resume Next
+    SheetExists = Not wb.Worksheets(sheetName) Is Nothing
+    On Error GoTo 0
+End Function
+
+
+'========================================================================================
+'   3) SINCRONIZAR 1 HOJA (1 BLOQUE / TABLA)
+'========================================================================================
+Private Sub SyncOneSheetBlock( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal dataStart As Long, _
+    ByVal firstCol As Long, ByVal lastCol As Long, _
+    ByVal keyRow As Long, _
+    ByVal wbTemplate As Workbook)
+
+    If firstCol = 0 Then firstCol = FirstNonEmptyCol(wsT, headerTop, headerBottom)
+    If lastCol = 0 Then lastCol = LastNonEmptyCol(wsT, headerTop, headerBottom)
+    If firstCol = 0 Or lastCol = 0 Or lastCol < firstCol Then Exit Sub
+
+    Dim lastRowT As Long
+    lastRowT = LastUsedRowInColumns(wsT, firstCol, lastCol)
+    If lastRowT < dataStart Then lastRowT = dataStart
+
+    Dim keysT As Variant, keysC As Variant
+    keysT = GetColumnKeys(wsT, headerTop, headerBottom, firstCol, lastCol, keyRow)
+    keysC = GetColumnKeys(wsC, headerTop, headerBottom, firstCol, LastNonEmptyCol(wsC, headerTop, headerBottom), keyRow)
+
+    AlignChildColumnsToTemplate wsT, wsC, keysT, keysC, headerTop, headerBottom, dataStart, lastRowT, firstCol, lastCol, keyRow, wbTemplate
+
+    ' Importante: si hay KEY_ROW (hojas tipo procesos), NO repintar toda la cabecera
+    If REFRESH_HEADER_FORMATS Then
+        If keyRow = 0 Then
+            CopyHeaderFormats wsT, wsC, headerTop, headerBottom, firstCol, LastNonEmptyCol(wsC, headerTop, headerBottom)
+        End If
+    End If
+
+    If FIX_EXTERNAL_REFS_WHOLE_SHEET Then
+        FixTemplateWorkbookRefsInRange wsC.UsedRange, wbTemplate
+    End If
+End Sub
+
+
+'========================================================================================
+'   4) LÓGICA DE ALINEADO (INSERTAR / ELIMINAR) + RENOMBRE CABECERAS
+'========================================================================================
+Private Sub AlignChildColumnsToTemplate( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal keysT As Variant, ByVal keysC As Variant, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal dataStart As Long, ByVal lastRowT As Long, _
+    ByVal firstCol As Long, ByVal lastColT As Long, _
+    ByVal keyRow As Long, _
+    ByVal wbTemplate As Workbook)
+
+    Dim dictC As Object: Set dictC = CreateObject("Scripting.Dictionary")
+    Dim colIndexC As Long
+    For colIndexC = LBound(keysC) To UBound(keysC)
+        If Len(keysC(colIndexC)) > 0 Then
+            dictC(keysC(colIndexC)) = firstCol + (colIndexC - LBound(keysC))
+        End If
+    Next colIndexC
+
+    ' Diccionario de keys del template (para detectar renombres)
+    Dim dictT As Object: Set dictT = CreateObject("Scripting.Dictionary")
+    Dim it As Long
+    For it = LBound(keysT) To UBound(keysT)
+        If Len(keysT(it)) > 0 Then dictT(keysT(it)) = True
+    Next it
+
+    Dim i As Long
+    For i = LBound(keysT) To UBound(keysT)
+
+        Dim key As String
+        key = keysT(i)
+
+        Dim targetColInChild As Long
+        targetColInChild = firstCol + (i - LBound(keysT))
+
+        If Len(key) = 0 Then
+            ' nada
+        Else
+            If dictC.Exists(key) Then
+                ' ya existe
+            Else
+                ' --- 1) Intento RENOMBRE (actualizar SOLO cabecera y conservar datos) ---
+                If HANDLE_HEADER_RENAMES Then
+                    If ShouldTreatAsRename(wsT, wsC, targetColInChild, headerTop, headerBottom, keyRow, dictT) Then
+
+                        Dim oldKey As String
+                        oldKey = BuildHeaderKeySmart(wsC, targetColInChild, headerTop, headerBottom, keyRow)
+
+                        On Error Resume Next
+                        If Len(oldKey) > 0 Then dictC.Remove oldKey
+                        On Error GoTo 0
+
+                        CopyTemplateHeaderOnlyToChildColumn wsT, wsC, _
+                            templateCol:=targetColInChild, childCol:=targetColInChild, _
+                            headerTop:=headerTop, headerBottom:=headerBottom, _
+                            wbTemplate:=wbTemplate
+
+                        dictC(key) = targetColInChild
+                        GoTo NextI
+                    End If
+                End If
+
+                ' --- 2) Columna nueva REAL: insertar y copiar (cabecera + datos/fórmulas de plantilla) ---
+                wsC.Columns(targetColInChild).Insert Shift:=xlToRight
+                ShiftDictRight dictC, targetColInChild
+
+                CopyNewTemplateColumn wsT, wsC, _
+                    templateCol:=targetColInChild, childCol:=targetColInChild, _
+                    headerTop:=headerTop, headerBottom:=headerBottom, _
+                    dataStart:=dataStart, lastRowT:=lastRowT, _
+                    wbTemplate:=wbTemplate
+
+                dictC(key) = targetColInChild
+            End If
+        End If
+
+NextI:
+    Next i
+
+    If DELETE_EXTRA_COLUMNS Then
+        DeleteExtraChildColumns wsT, wsC, headerTop, headerBottom, firstCol, lastColT, keyRow
+    End If
+End Sub
+
+Private Sub ShiftDictRight(ByVal dictC As Object, ByVal fromCol As Long)
+    Dim k As Variant
+    For Each k In dictC.Keys
+        If dictC(k) >= fromCol Then dictC(k) = dictC(k) + 1
+    Next k
+End Sub
+
+Private Sub DeleteExtraChildColumns( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal firstCol As Long, ByVal lastColT As Long, _
+    ByVal keyRow As Long)
+
+    Dim lastColC As Long
+    lastColC = LastNonEmptyCol(wsC, headerTop, headerBottom)
+    If lastColC < firstCol Then Exit Sub
+
+    Dim keysT As Object: Set keysT = CreateObject("Scripting.Dictionary")
+    Dim c As Long
+
+    For c = firstCol To lastColT
+        Dim kt As String
+        kt = BuildHeaderKeySmart(wsT, c, headerTop, headerBottom, keyRow)
+        If Len(kt) > 0 Then keysT(kt) = True
+    Next c
+
+    For c = lastColC To firstCol Step -1
+        Dim kc As String
+        kc = BuildHeaderKeySmart(wsC, c, headerTop, headerBottom, keyRow)
+
+        If Len(kc) > 0 Then
+            If Not keysT.Exists(kc) Then
+                wsC.Columns(c).Delete
+            End If
+        End If
+    Next c
+End Sub
+
+
+'========================================================================================
+'   5) COPIAR COLUMNA NUEVA DESDE PLANTILLA
+'========================================================================================
+Private Sub CopyNewTemplateColumn( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal templateCol As Long, ByVal childCol As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal dataStart As Long, ByVal lastRowT As Long, _
+    ByVal wbTemplate As Workbook)
+
+    wsC.Columns(childCol).ColumnWidth = wsT.Columns(templateCol).ColumnWidth
+
+    ' Cabeceras
+    wsT.Range(wsT.Cells(headerTop, templateCol), wsT.Cells(headerBottom, templateCol)).Copy
+    wsC.Cells(headerTop, childCol).PasteSpecial Paste:=xlPasteAll
+
+    ' Datos / fórmulas (hasta lastRowT en plantilla)
+    wsT.Range(wsT.Cells(dataStart, templateCol), wsT.Cells(lastRowT, templateCol)).Copy
+    wsC.Cells(dataStart, childCol).PasteSpecial Paste:=xlPasteAll
+
+    Application.CutCopyMode = False
+
+    ' Quitar [Plantilla.xlsm] / ['C:\...\Plantilla.xlsm'] de fórmulas pegadas
+    FixTemplateWorkbookRefsInRange wsC.Range(wsC.Cells(headerTop, childCol), wsC.Cells(headerBottom, childCol)), wbTemplate
+    FixTemplateWorkbookRefsInRange wsC.Range(wsC.Cells(dataStart, childCol), wsC.Cells(lastRowT, childCol)), wbTemplate
+End Sub
+
+Private Sub CopyHeaderFormats( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal firstCol As Long, ByVal lastCol As Long)
+
+    wsT.Range(wsT.Cells(headerTop, firstCol), wsT.Cells(headerBottom, lastCol)).Copy
+    wsC.Range(wsC.Cells(headerTop, firstCol), wsC.Cells(headerBottom, lastCol)).PasteSpecial Paste:=xlPasteFormats
+    Application.CutCopyMode = False
+End Sub
+
+
+'========================================================================================
+'   5A) RENOMBRE CABECERAS: ACTUALIZAR SOLO CABECERA SIN TOCAR DATOS
+'========================================================================================
+Private Function ShouldTreatAsRename( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal targetColInChild As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal keyRow As Long, _
+    ByVal templateKeys As Object) As Boolean
+
+    If targetColInChild <= 0 Then Exit Function
+
+    Dim childKey As String
+    childKey = BuildHeaderKeySmart(wsC, targetColInChild, headerTop, headerBottom, keyRow)
+    If Len(childKey) = 0 Then Exit Function
+
+    ' Si esa cabecera del hijo NO existe en el template, suele ser un renombre
+    If Not templateKeys.Exists(childKey) Then
+        ShouldTreatAsRename = True
+    End If
+End Function
+
+Private Sub CopyTemplateHeaderOnlyToChildColumn( _
+    ByVal wsT As Worksheet, ByVal wsC As Worksheet, _
+    ByVal templateCol As Long, ByVal childCol As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal wbTemplate As Workbook)
+
+    wsT.Range(wsT.Cells(headerTop, templateCol), wsT.Cells(headerBottom, templateCol)).Copy
+    wsC.Cells(headerTop, childCol).PasteSpecial Paste:=xlPasteAll
+    Application.CutCopyMode = False
+
+    FixTemplateWorkbookRefsInRange wsC.Range(wsC.Cells(headerTop, childCol), wsC.Cells(headerBottom, childCol)), wbTemplate
+End Sub
+
+
+'========================================================================================
+'   5B) FIX: QUITAR REFERENCIAS AL LIBRO PLANTILLA EN FÓRMULAS
+'========================================================================================
+Private Sub FixTemplateWorkbookRefsInRange(ByVal rng As Range, ByVal wbTemplate As Workbook)
+    On Error GoTo EH
+
+    Dim tmplName As String
+    tmplName = wbTemplate.Name
+
+    Dim c As Range
+    Dim f As String
+
+    For Each c In rng.Cells
+        If c.HasFormula Then
+            f = c.Formula
+            If InStr(1, f, "[", vbTextCompare) > 0 And InStr(1, f, "]", vbTextCompare) > 0 Then
+                f = StripTemplateQualifierFromFormula(f, tmplName)
+                c.Formula = f
+            End If
+        End If
+    Next c
+
+    Exit Sub
+EH:
+    ' no tumba el proceso
+End Sub
+
+Private Function StripTemplateQualifierFromFormula(ByVal formulaText As String, ByVal templateWbName As String) As String
+    Dim s As String: s = formulaText
+    Dim iOpen As Long, iClose As Long
+    Dim inside As String
+
+    iOpen = InStr(1, s, "[", vbTextCompare)
+
+    Do While iOpen > 0
+        iClose = InStr(iOpen + 1, s, "]", vbTextCompare)
+        If iClose = 0 Then Exit Do
+
+        inside = Mid$(s, iOpen + 1, iClose - iOpen - 1)
+
+        If InStr(1, inside, templateWbName, vbTextCompare) > 0 Then
+            s = Left$(s, iOpen - 1) & Mid$(s, iClose + 1)
+            iOpen = InStr(1, s, "[", vbTextCompare)
+        Else
+            iOpen = InStr(iClose + 1, s, "[", vbTextCompare)
+        End If
+    Loop
+
+    StripTemplateQualifierFromFormula = s
+End Function
+
+
+'========================================================================================
+'   6) OBTENER CLAVES DE COLUMNAS (multi-fila + merges) + KEY_ROW
+'========================================================================================
+Private Function GetColumnKeys( _
+    ByVal ws As Worksheet, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal firstCol As Long, ByVal lastCol As Long, _
+    ByVal keyRow As Long) As Variant
+
+    Dim arr() As String
+    Dim n As Long
+    n = (lastCol - firstCol + 1)
+    ReDim arr(1 To n)
+
+    Dim c As Long, idx As Long
+    idx = 1
+    For c = firstCol To lastCol
+        arr(idx) = BuildHeaderKeySmart(ws, c, headerTop, headerBottom, keyRow)
+        idx = idx + 1
+    Next c
+
+    GetColumnKeys = arr
+End Function
+
+Private Function BuildHeaderKeySmart( _
+    ByVal ws As Worksheet, _
+    ByVal col As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal keyRow As Long) As String
+
+    If keyRow >= headerTop And keyRow <= headerBottom And keyRow > 0 Then
+        Dim vKR As String
+        vKR = NormalizeHeaderText(GetMergedValue(ws.Cells(keyRow, col)))
+
+        If Len(vKR) > 0 Then
+            If IsNumeric(vKR) Then
+                BuildHeaderKeySmart = "KR#" & CLng(Val(vKR))
+            Else
+                BuildHeaderKeySmart = "KR:" & vKR
+            End If
+            Exit Function
+        End If
+    End If
+
+    BuildHeaderKeySmart = BuildHeaderKeyFull(ws, col, headerTop, headerBottom)
+End Function
+
+Private Function BuildHeaderKeyFull( _
+    ByVal ws As Worksheet, _
+    ByVal col As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long) As String
+
+    Dim parts As Collection
+    Set parts = New Collection
+
+    Dim r As Long
+    For r = headerTop To headerBottom
+        Dim v As String
+        v = NormalizeHeaderText(GetMergedValue(ws.Cells(r, col)))
+
+        If Len(v) > 0 Then
+            If parts.Count = 0 Then
+                parts.Add v
+            Else
+                If parts(parts.Count) <> v Then parts.Add v
+            End If
+        End If
+    Next r
+
+    Dim key As String
+    key = ""
+
+    Dim i As Long
+    For i = 1 To parts.Count
+        If Len(key) = 0 Then
+            key = parts(i)
+        Else
+            key = key & "|" & parts(i)
+        End If
+    Next i
+
+    BuildHeaderKeyFull = key
+End Function
+
+Private Function NormalizeHeaderText(ByVal s As String) As String
+    Dim t As String
+    t = CStr(s)
+    t = Replace(t, vbCr, " ")
+    t = Replace(t, vbLf, " ")
+    t = Application.Trim(t)
+    NormalizeHeaderText = t
+End Function
+
+Private Function GetMergedValue(ByVal cell As Range) As String
+    On Error GoTo EH
+
+    Dim v As Variant
+    If cell.MergeCells Then
+        v = cell.MergeArea.Cells(1, 1).Value
+    Else
+        v = cell.Value
+    End If
+
+    If IsError(v) Then
+        GetMergedValue = ""
+    Else
+        GetMergedValue = CStr(v)
+    End If
+    Exit Function
+
+EH:
+    GetMergedValue = ""
+End Function
+
+
+'========================================================================================
+'   7) AUTO-DETECCIÓN DE PRIMERA / ÚLTIMA COLUMNA REAL (en cabeceras)
+'========================================================================================
+Private Function FirstNonEmptyCol(ByVal ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long) As Long
+    Dim minCol As Long: minCol = 0
+    Dim r As Long
+
+    For r = r1 To r2
+        Dim f As Range
+        Set f = ws.Rows(r).Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
+                                SearchOrder:=xlByColumns, SearchDirection:=xlNext)
+        If Not f Is Nothing Then
+            If minCol = 0 Or f.Column < minCol Then minCol = f.Column
+        End If
+    Next r
+
+    FirstNonEmptyCol = minCol
+End Function
+
+Private Function LastNonEmptyCol(ByVal ws As Worksheet, ByVal r1 As Long, ByVal r2 As Long) As Long
+    Dim maxCol As Long: maxCol = 0
+    Dim r As Long
+
+    For r = r1 To r2
+        Dim f As Range
+        Set f = ws.Rows(r).Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
+                                SearchOrder:=xlByColumns, SearchDirection:=xlPrevious)
+        If Not f Is Nothing Then
+            If f.Column > maxCol Then maxCol = f.Column
+        End If
+    Next r
+
+    LastNonEmptyCol = maxCol
+End Function
+
+Private Function LastUsedRowInColumns(ByVal ws As Worksheet, ByVal c1 As Long, ByVal c2 As Long) As Long
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(1, c1), ws.Cells(ws.Rows.Count, c2))
+
+    Dim f As Range
+    Set f = rng.Find(What:="*", LookIn:=xlFormulas, LookAt:=xlPart, _
+                     SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+
+    If f Is Nothing Then
+        LastUsedRowInColumns = 0
+    Else
+        LastUsedRowInColumns = f.Row
+    End If
+End Function
