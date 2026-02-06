@@ -34,7 +34,7 @@ Private Const FIX_EXTERNAL_REFS_WHOLE_SHEET As Boolean = True
 '   PUNTO DE ENTRADA
 '=============================
 
-Public Sub SYNC_Run()
+Public Sub SYNC_RunReferencias()
     Dim rootFolder As String
     rootFolder = GetRootFolder()
 
@@ -231,7 +231,9 @@ Private Sub SyncOneSheetBlock( _
     AlignChildColumnsToTemplate wsT, wsC, keysT, keysC, headerTop, headerBottom, dataStart, lastRowT, firstCol, lastCol, keyRow, wbTemplate
 
     If REFRESH_HEADER_FORMATS Then
+        If keyRow = 0 Then
         CopyHeaderFormats wsT, wsC, headerTop, headerBottom, firstCol, LastNonEmptyCol(wsC, headerTop, headerBottom)
+        End If
     End If
 
     ' Limpieza global de referencias a Plantilla (por si ya existían fórmulas con [Plantilla.xlsm]...)
@@ -603,3 +605,4 @@ Private Function LastUsedRowInColumns(ByVal ws As Worksheet, ByVal c1 As Long, B
         LastUsedRowInColumns = f.Row
     End If
 End Function
+
