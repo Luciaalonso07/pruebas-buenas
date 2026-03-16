@@ -1,0 +1,67 @@
+'========================================================================================
+'   1) RUTAS Y BÚSQUEDA DE ARCHIVOS
+'========================================================================================
+
+Private Function GetRootFolder() As String
+    ' Carpeta raíz donde están la carpeta de plantilla y las carpetas principales
+    GetRootFolder = "C:\Users\VW356HB\OneDrive - EY\Desktop\pruebas buenas"
+End Function
+
+Private Sub SyncAllChildrenInFolders(ByVal rootFolder As String)
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim rootObj As Object
+    Set rootObj = fso.GetFolder(rootFolder)
+
+    Dim subFolder As Object
+
+    ' Recorre todas las carpetas principales dentro de "pruebas buenas"
+    For Each subFolder In rootObj.SubFolders
+
+        ' Excluir la carpeta donde está la plantilla
+        If LCase$(subFolder.Name) <> LCase$("00.Plantilla BIA") Then
+            SyncAllChildrenInOneFolder subFolder.Path
+        End If
+
+    Next subFolder
+End Sub
+
+Private Sub SyncAllChildrenInOneFolder(ByVal folderPath As String)
+    Dim fso As Object
+    Set fso = CreateObject("Scripting.FileSystemObject")
+
+    Dim folderObj As Object
+    Set folderObj = fso.GetFolder(folderPath)
+
+    ' Busca archivos Excel en esta carpeta y en todas sus subcarpetas
+    SyncFilesRecursive folderObj
+End Sub
+
+Private Sub SyncFilesRecursive(ByVal folderObj As Object)
+    Dim patterns As Variant
+    patterns = Split(CHILD_EXTENSIONS, ";")
+
+    Dim p As Long
+    Dim fileName As String
+    Dim fullPath As String
+
+    ' Buscar archivos Excel en la carpeta actual
+    For p = LBound(patterns) To UBound(patterns)
+        fileName = Dir(folderObj.Path & Application.PathSeparator & patterns(p))
+
+        Do While Len(fileName) > 0
+            If LCase$(fileName) <> LCase$(ThisWorkbook.Name) Then
+                fullPath = folderObj.Path & Application.PathSeparator & fileName
+                SyncOneChildWorkbook fullPath
+            End If
+            fileName = Dir
+        Loop
+    Next p
+
+    ' Entrar en todas las subcarpetas
+    Dim subFolder As Object
+    For Each subFolder In folderObj.SubFolders
+        SyncFilesRecursive subFolder
+    Next subFolder
+End Sub
