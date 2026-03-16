@@ -1,29 +1,7 @@
 Option Explicit
 
 '========================================================================================
-'   SINCRONIZADOR DE PLANTILLA -> EXCELS HIJOS (subcarpetas)
-'
-'   QUÉ HACE:
-'   - Alinea columnas entre plantilla e hijos (inserta nuevas columnas en el hijo).
-'   - (Opcional) Borra columnas “extra” del hijo que no existan en plantilla.
-'   - (Opcional) Refresca formatos de cabecera (solo cuando NO hay KEY_ROW).
-'   - FIX: Limpia referencias externas a [Plantilla.xlsm] en fórmulas pegadas.
-'
-'   MEJORA CLAVE: RENOMBRE DE CABECERAS SIN PERDER DATOS
-'   - Si cambias un título de cabecera (p.ej. "Descripción" -> "Descripción detallada"),
-'     el sincronizador lo detecta y SOLO actualiza la cabecera en el hijo, conservando datos.
-'
-'   NUEVO: CREAR HOJAS QUE FALTAN EN EL HIJO (SOLO SI ESTÁN EN CFG_SYNC Y=ACTIVE)
-'   - Si una hoja aparece en CFG_SYNC con ACTIVE=Y pero NO existe en el hijo,
-'     se copia desde la plantilla al hijo antes de sincronizar.
-'
-'   NUEVO (TABLAS EN HOJAS NUEVAS):
-'   - Si la hoja YA EXISTE en el hijo pero está "vacía" (sin estructura/cabeceras),
-'     se REEMPLAZA por la versión de la plantilla (para que traiga la tabla/formatos).
-'     -> No se reemplaza si ya hay cabecera/datos (para no borrar información).
-'
-'   KEY_ROW (CFG_SYNC col I):
-'   - Si KEY_ROW está entre HEADER_TOP..HEADER_BOTTOM, se usa para generar claves KR#...
+'   SINCRONIZADOR DE PLANTILLA -> EXCELS
 '========================================================================================
 
 '=============================
@@ -83,10 +61,10 @@ End Sub
 
 
 '========================================================================================
-'   1) RUTAS Y BÚSQUEDA DE ARCHIVOS HIJO
+'   1) RUTAS Y BÚSQUEDA DE ARCHIVOS
 '========================================================================================
 Private Function GetRootFolder() As String
-    ' >>> AJUSTA TU RUTA AQUÍ <<<
+    ' >>> AJUSTAR RUTA AQUÍ <<<
     GetRootFolder = "C:\Users\VW356HB\OneDrive - EY\Desktop\pruebas buenas"
 End Function
 
@@ -129,7 +107,7 @@ End Sub
 
 
 '========================================================================================
-'   2) SINCRONIZAR 1 ARCHIVO HIJO
+'   2) SINCRONIZAR ARCHIVO
 '========================================================================================
 Private Sub SyncOneChildWorkbook(ByVal childFullPath As String)
     Dim wbChild As Workbook
@@ -191,12 +169,12 @@ Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild
 
             If SheetExists(wbTemplate, templateSheetName) Then
 
-                ' 1) Si NO existe en el hijo: crearla copiándola desde la plantilla (trae tabla/formatos)
+                ' 1) Si NO existe en el excel: copia desde la plantilla (trae tabla/formatos)
                 If Not SheetExists(wbChild, childSheetName) Then
                     CreateChildSheetFromTemplate wbTemplate, wbChild, templateSheetName, childSheetName
 
                 Else
-                    ' 2) Si existe pero está "vacía" (sin cabecera/estructura): reemplazar por plantilla
+                    ' 2) Si existe pero está vacía (sin cabecera/estructura)copia la de la plantilla
                     Dim wsChildTmp As Worksheet
                     Set wsChildTmp = wbChild.Worksheets(childSheetName)
 
@@ -205,7 +183,7 @@ Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild
                     End If
                 End If
 
-                ' 3) Si ya está en el hijo, sincronizar bloque/tabla
+                ' 3) Si ya está en el excel, sincronizar bloque/tabla
                 If SheetExists(wbChild, childSheetName) Then
                     SyncOneSheetBlock _
                         wbTemplate.Worksheets(templateSheetName), _
@@ -219,7 +197,7 @@ Private Sub SyncWorkbookFromTemplate(ByVal wbTemplate As Workbook, ByVal wbChild
     Next r
 End Sub
 
-' Crea en el hijo una hoja copiándola desde la plantilla (solo se llama desde CFG_SYNC con ACTIVE=Y)
+' Crea en el excel una hoja copiándola desde la plantilla (solo se llama desde CFG_SYNC con ACTIVE=Y)
 Private Sub CreateChildSheetFromTemplate( _
     ByVal wbTemplate As Workbook, ByVal wbChild As Workbook, _
     ByVal templateSheetName As String, ByVal childSheetName As String)
@@ -240,10 +218,10 @@ EH:
     ' No tumba el proceso
 End Sub
 
-' Detecta si la hoja del hijo está "sin estructura" (cabeceras vacías en el rango configurado)
+' Detecta si la hoja del excel está vacia (cabeceras vacías en el rango configurado)
 Private Function IsChildSheetStructureMissing( _
     ByVal wsC As Worksheet, _
-   ublin: ByVal headerTop As Long, ByVal headerBottom As Long, _
+    ByVal headerTop As Long, ByVal headerBottom As Long, _
     ByVal dataStart As Long, _
     ByVal firstCol As Long, ByVal lastCol As Long) As Boolean
 
@@ -260,7 +238,7 @@ Private Function IsChildSheetStructureMissing( _
         Exit Function
     End If
 
-    ' Si en cabeceras no hay nada, está “sin estructura”
+    ' Si en cabeceras no hay nada, está vacia
     If Application.WorksheetFunction.CountA(wsC.Range(wsC.Cells(headerTop, fc), wsC.Cells(headerBottom, lc))) = 0 Then
         IsChildSheetStructureMissing = True
         Exit Function
@@ -273,7 +251,7 @@ EH:
     IsChildSheetStructureMissing = False
 End Function
 
-' Reemplaza la hoja del hijo por una copia exacta de la plantilla (solo si estaba vacía)
+' Reemplazar la hoja del excel por una copia exacta de la plantilla (solo si estaba vacía)
 Private Sub ReplaceChildSheetFromTemplate( _
     ByVal wbTemplate As Workbook, ByVal wbChild As Workbook, _
     ByVal templateSheetName As String, ByVal childSheetName As String)
@@ -523,7 +501,7 @@ Private Function ShouldTreatAsRename( _
     childKey = BuildHeaderKeySmart(wsC, targetColInChild, headerTop, headerBottom, keyRow)
     If Len(childKey) = 0 Then Exit Function
 
-    ' Si esa cabecera del hijo NO existe en el template, suele ser un renombre
+    ' Si esa cabecera del excel no existe en la plantilla, suele ser un renombre
     If Not templateKeys.Exists(childKey) Then
         ShouldTreatAsRename = True
     End If
