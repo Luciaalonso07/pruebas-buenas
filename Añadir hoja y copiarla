@@ -1,0 +1,35 @@
+                ' CASO ESPECIAL: hojas que deben copiarse siempre completas
+                If LCase$(templateSheetName) = LCase$("ControlVersiones") Then
+
+                    If SheetExists(wbChild, childSheetName) Then
+                        ReplaceChildSheetFromTemplate wbTemplate, wbChild, templateSheetName, childSheetName
+                    Else
+                        CreateChildSheetFromTemplate wbTemplate, wbChild, templateSheetName, childSheetName
+                    End If
+
+                Else
+
+                    ' 1) Si NO existe en el excel: copia desde la plantilla
+                    If Not SheetExists(wbChild, childSheetName) Then
+                        CreateChildSheetFromTemplate wbTemplate, wbChild, templateSheetName, childSheetName
+
+                    Else
+                        ' 2) Si existe pero está vacía/sin estructura, la reemplaza
+                        Dim wsChildTmp As Worksheet
+                        Set wsChildTmp = wbChild.Worksheets(childSheetName)
+
+                        If IsChildSheetStructureMissing(wsChildTmp, headerTop, headerBottom, dataStart, firstCol, lastCol) Then
+                            ReplaceChildSheetFromTemplate wbTemplate, wbChild, templateSheetName, childSheetName
+                        End If
+                    End If
+
+                    ' 3) Si ya está en el excel, sincronizar bloque/tabla
+                    If SheetExists(wbChild, childSheetName) Then
+                        SyncOneSheetBlock _
+                            wbTemplate.Worksheets(templateSheetName), _
+                            wbChild.Worksheets(childSheetName), _
+                            headerTop, headerBottom, dataStart, _
+                            firstCol, lastCol, keyRow, wbTemplate
+                    End If
+
+                End If
